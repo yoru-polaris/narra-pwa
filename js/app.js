@@ -969,7 +969,11 @@ async function generate(parentId, opts = {}) {
         if (ok) continue;
         break;
       }
-      if (e.vertexProject && conn && !conn.project) { conn.project = e.vertexProject; saveSettings(); }
+      if (e.vertexProject && conn && !conn.project) {
+        conn.project = e.vertexProject;
+        saveSettings();
+        if (conn.location && !got) continue;   // プロジェクトが分かったので、選んだリージョンでやり直す
+      }
       S.error = e.message;
       break;
     }
@@ -1552,27 +1556,42 @@ function select(obj, key, options, save, after) {
   return el;
 }
 
+const testResults = new Map();   // 接続テストの結果（画面を描き直しても残す）
+
 function connCard(c) {
   const isActive = c.id === S.settings.activeConnId;
   const isDummy = c.type === 'dummy';
   const isGemini = c.type === 'vertex' || c.type === 'gemini';
   const again = () => renderSettings();
-  const result = h('div', { class: 'result' });
+  const result = h('div', { class: 'result', text: testResults.get(c.id) || '' });
 
   const test = async (btn) => {
     btn.disabled = true;
     result.textContent = '接続を確認中…';
     let text = '';
-    try {
-      for await (const ev of streamChat(c, { system: '', messages: [{ role: 'user', text: 'こんにちは。ひとことで返事をしてください。' }] })) {
-        if (ev.text) text += ev.text;
+    let msg = '';
+    let learned = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        for await (const ev of streamChat(c, { system: '', messages: [{ role: 'user', text: 'こんにちは。ひとことで返事をしてください。' }] })) {
+          if (ev.text) text += ev.text;
+        }
+        msg = text ? `【成功】つながりました\n返事: ${text}` : '【注意】つながりましたが、返事が空でした。';
+        break;
+      } catch (e) {
+        if (e.vertexProject && !c.project) {
+          c.project = e.vertexProject;
+          learned = true;
+          saveSettings();
+          if (c.location && attempt === 0) continue;   // 番号が分かったので、選んだリージョンでもう一度
+        }
+        msg = `【失敗】${e.message}`;
+        break;
       }
-      result.textContent = text ? `【成功】つながりました\n返事: ${text}` : '【注意】つながりましたが、返事が空でした。';
-    } catch (e) {
-      if (e.vertexProject && !c.project) { c.project = e.vertexProject; saveSettings(); }
-      result.textContent = `【失敗】${e.message}`;
     }
-    btn.disabled = false;
+    testResults.set(c.id, msg);
+    if (learned) renderSettings();   // 自動で入ったプロジェクト番号を画面にも出す（結果は描き直した画面に引き継ぐ）
+    else { result.textContent = msg; btn.disabled = false; }
   };
 
   const card = h('details', { class: `card ${isActive ? 'active' : ''}`, open: S.openCard === c.id },
@@ -1599,7 +1618,7 @@ c.type === 'vertex' && h('details', { class: 'sub', open: !!c.location },
       h('summary', { text: `リージョン（場所）${c.location ? `：${c.location}` : ''}` }),
       h('div', { class: 'hint', text: '新しいモデル（gemini-4-carbon など）は、global にしかないことがあります。「見つからない」エラーが出たら global にしてください。指定しない場合は、プロジェクトの既定の場所で動きます。' }),
       field('リージョン', select(c, 'location', [['', '指定しない（プロジェクトの既定）'], ['global', 'global（おすすめ）'], ['us', 'us（米国）'], ['eu', 'eu（欧州）'], ['asia-northeast1', 'asia-northeast1（東京）'], ['asia-southeast1', 'asia-southeast1（シンガポール）'], ['us-central1', 'us-central1（米国中部）']], saveSettings, again)),
-      field('プロジェクト（番号またはID）', bound(c, 'project', saveSettings, { type: 'text', placeholder: '例: 123456789012', autocapitalize: 'off', autocorrect: 'off', inputMode: 'text' }), 'リージョンを指定するときに必要です。エラーが出たときに、エラー文から自動で入ることもあります。')),
+      field('プロジェクト（番号またはID）', bound(c, 'project', saveSettings, { type: 'text', placeholder: '例: 123456789012', autocapitalize: 'off', autocorrect: 'off', inputMode: 'text' }), '空のままでも、最初に呼んだときに自動で入ります。入らないときは、Google Cloud の画面にあるプロジェクト番号を入れてください。')),
     isGemini && field('安全フィルター', select(c, 'safety', { default: '指定しない（標準）', BLOCK_ONLY_HIGH: '弱め', BLOCK_NONE: 'ブロックしない' }, saveSettings)),
     h('div', { class: 'btnrow' },
       !isActive && h('button', { class: 'primary', text: 'この接続を使う', onclick: () => { S.settings.activeConnId = c.id; saveSettings(); again(); } }),

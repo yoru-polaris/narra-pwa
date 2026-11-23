@@ -98,10 +98,9 @@ function vertexUrl(conn, model) {
   const loc = (conn.location || '').trim();
   if (!loc) return `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:streamGenerateContent?alt=sse`;
   const project = (conn.project || '').trim();
-  if (!project) {
-    const err = new Error('リージョンを指定するときは、プロジェクトの番号（またはID）も必要です。\n歯車 →「接続先」の「プロジェクト」に入れてください。番号は、エラー文の projects/○○○ の部分や、Google Cloud の画面で確認できます。');
-    throw err;
-  }
+  // プロジェクトがまだ分からないときは、短い形で一度呼ぶ。モデルが無ければエラー文にプロジェクト番号が出るので、
+  // アプリ側がそれを覚えて、指定のリージョンでやり直す。
+  if (!project) return `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:streamGenerateContent?alt=sse`;
   const host = loc === 'global' ? 'aiplatform.googleapis.com' : loc === 'us' ? 'aiplatform.us.rep.googleapis.com' : loc === 'eu' ? 'aiplatform.eu.rep.googleapis.com' : `${loc}-aiplatform.googleapis.com`;
   return `https://${host}/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${model}:streamGenerateContent?alt=sse`;
 }
