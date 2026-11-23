@@ -463,6 +463,8 @@ function messageEl(m, index) {
       );
     }
     tools.append(h('button', { class: 'sym c-fold', text: m.collapsed ? '▸' : '▾', 'aria-label': m.collapsed ? 'ひらく' : 'たたむ', onclick: fold }));
+    // 返事がまだ無い（エラーで止まった）最後の発言には、返事をもらい直すボタンを出す
+    if (m.role === 'user' && m.id === S.chat.leafId) tools.append(h('button', { class: 'c-go', text: '返事をもらう', onclick: () => generate(m.id) }));
     if (m.role === 'assistant' && m.id === S.chat.leafId) tools.append(h('button', { class: 'c-go', text: '続き', onclick: () => continueFrom(m) }));
     if (m.side) tools.append(h('button', { class: 'c-retry', text: 'やり直す', onclick: () => runInsert({ name: m.sideName, text: m.sideText || '', mode: 'side' }, m.parentId) }));
     else if (m.role === 'assistant') tools.append(h('button', { class: 'c-retry', text: '再生成', onclick: () => generate(m.parentId) }));
@@ -498,6 +500,8 @@ function render() {
   S.faces = { assistant: cast.length === 1 ? cast[0] : null, user: heroNow?.card || null };
   $('#btnImages').classList.toggle('off', !S.settings.showImages);
   $('#btnSend').textContent = S.busy ? '停止' : '送信';
+  const waitingReply = !S.busy && S.msgs.get(S.chat.leafId)?.role === 'user';
+  $('#input').placeholder = waitingReply ? '空のまま送信すると、返事をもう一度もらえます' : 'メッセージを入力';
 
   const box = $('#messages');
   const path = pathTo(S.chat.leafId);
