@@ -417,6 +417,8 @@ function openUsage() {
   show('#sheet');
 }
 
+const openThoughts = new Set();   // 開いている思考の枠（描き直しても開いたままにする）
+
 function messageEl(m, index) {
   const el = h('div', { class: `msg ${m.role}` });
   el.dataset.id = m.id;
@@ -439,7 +441,10 @@ function messageEl(m, index) {
   if (m.collapsed) {
     bubble.append(h('div', { class: 'body', text: expandImages(m.text).replace(IMG_URL, '〔画像〕').trim().slice(0, 200) }));
   } else {
-    if (m.thought) bubble.append(h('details', { class: 'thought' }, h('summary', { text: '思考' }), h('div', { text: m.thought })));
+    if (m.thought) bubble.append(h('details', { class: 'thought', open: openThoughts.has(m.id), ontoggle: (e) => { if (e.target.open) openThoughts.add(m.id); else openThoughts.delete(m.id); } }, h('summary', { text: '思考' }), h('div', { text: m.thought }),
+      h('div', { class: 'thoughtbtns' },
+        h('button', { text: m.thoughtJa ? '日本語訳を見る' : '日本語にする', onclick: () => translateThought(m) }),
+        h('button', { text: 'コピー', onclick: () => navigator.clipboard.writeText(m.thought).then(() => toast('思考をコピーしました')) }))));
     bubble.append(h('div', { class: 'body' }, richText(m.text)));
     if (filesOf(m).length) bubble.append(h('div', { class: 'files' }, filesOf(m).map((f) => f.kind === 'image'
       ? h('img', { src: `data:${f.mime};base64,${f.data}`, alt: f.name })
@@ -640,6 +645,39 @@ const SUMMARY_PROMPT = `あなたは物語の記録係です。渡される小�
 - 内容を和らげたり、評価や感想を加えたりしない。
 - 2000字以内。あらすじの本文だけを出力する。`;
 
+// 思考の日本語訳。押したときだけ、要約・翻訳用のモデルで訳して、横の画面に出す。訳は保存して、次からは無料で見られる。
+const TRANSLATE_PROMPT = 'あなたは翻訳者です。渡される文章は、AIが返事を書く前に考えた内容のメモです。自然な日本語に翻訳してください。見出しや箇条書きの形はそのまま残し、内容を省いたり、付け足したり、和らげたりしないでください。訳文だけを出力してください。';
+
+async function translateThought(m) {
+  $('#sheetTitle').textContent = '思考の日本語訳';
+  const out = h('div', { class: 'translated' });
+  const copyBtn = h('button', { text: '訳をコピー', disabled: !m.thoughtJa, onclick: () => navigator.clipboard.writeText(out.textContent).then(() => toast('訳をコピーしました')) });
+  const conn = summaryConn();
+  $('#sheetBody').replaceChildren(
+    h('p', { class: 'hint', text: m.thoughtJa ? '前に訳したものです。' : `「${modelLabel(conn)}」で訳しています。モデルは、チャット名 →「あらすじ（要約）」の「要約・翻訳に使うモデル」で変えられます。` }),
+    out,
+    h('div', { class: 'btnrow' }, copyBtn,
+      h('button', { text: '原文をコピー', onclick: () => navigator.clipboard.writeText(m.thought).then(() => toast('原文をコピーしました')) }),
+      m.thoughtJa && h('button', { text: '訳し直す', onclick: async () => { delete m.thoughtJa; await db.put('messages', m); render(); translateThought(m); } })),
+  );
+  show('#sheet');
+  if (m.thoughtJa) { out.textContent = m.thoughtJa; return; }
+  out.textContent = '訳しています…';
+  let text = '';
+  try {
+    for await (const ev of streamChat(conn, { system: TRANSLATE_PROMPT, messages: [{ role: 'user', text: m.thought }] })) {
+      if (ev.text) { text += ev.text; out.textContent = text; }
+    }
+    if (!text.trim()) throw new Error('訳が空でした。');
+    m.thoughtJa = text.trim();
+    await db.put('messages', m);
+    copyBtn.disabled = false;
+    if (S.chat?.id === m.chatId) render();
+  } catch (e) {
+    out.textContent = `訳せませんでした。\n${e.message}`;
+  }
+}
+
 function summaryConn() {
   const cfg = S.settings.summary;
   const base = S.settings.connections.find((c) => c.id === cfg.connId) || activeConn();
@@ -705,7 +743,7 @@ function openSummary() {
       chat.summary && h('button', { class: 'danger', text: '要約を消す', onclick: async () => { if (!confirm('要約を消して、全文を送る状態に戻しますか？')) return; delete chat.summary; await saveChatOnly(); openSummary(); } })),
     h('div', { class: 'card', style: 'margin-top:14px' },
       h('strong', { text: '要約の設定（全チャット共通）' }),
-      field('要約に使うモデル', pick, '安いモデルで十分です。'),
+      field('要約・翻訳に使うモデル', pick, '思考の日本語訳にも使います。安いモデルで十分です。'),
       h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!cfg.auto, onchange: (e) => { cfg.auto = e.target.checked; saveSettings(); } }), '長くなったら自動で要約する'),
       field('要約していないメッセージがこの件数を超えたら要約', bound(cfg, 'threshold', saveSettings, { type: 'number', min: '6', inputMode: 'numeric' })),
       field('直近この件数は要約せずそのまま送る', bound(cfg, 'keep', saveSettings, { type: 'number', min: '2', inputMode: 'numeric' }))),
