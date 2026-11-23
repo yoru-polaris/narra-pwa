@@ -112,7 +112,7 @@ function newConn() {
   return {
     id: uid(), name: 'Vertex AI', type: 'vertex', apiKey: '', baseUrl: '', model: DEFAULT_MODELS[0], models: [...DEFAULT_MODELS],
     temperature: '', maxTokens: '', thinkMode: 'none', thinkBudget: '', thinkLevel: 'high',
-    showThoughts: false, safety: 'default', location: '', project: '',
+    showThoughts: false, safety: 'default', location: '', project: '', fallbackModel: '',
   };
 }
 
@@ -947,9 +947,11 @@ async function generate(parentId, opts = {}) {
 
   const ticker = setInterval(() => { if (!m.text) paint(); }, 1000);
   const tries = Number(ui.retries ?? 2);
+  let useConn = conn;
+  let fellBack = false;
   for (let attempt = 0; ; attempt++) {
     try {
-      for await (const ev of streamChat(conn, { system, messages: history, signal: S.abort.signal })) {
+      for await (const ev of streamChat(useConn, { system, messages: history, signal: S.abort.signal })) {
         if (ev.text) { m.text += ev.text; got = true; }
         if (ev.thought) m.thought += ev.thought;
         if (ev.notice) m.notice = ev.notice;
@@ -961,7 +963,8 @@ async function generate(parentId, opts = {}) {
       if (e.name === 'AbortError') break;
       // 混雑（429）・サーバー側のエラー（5xx）・通信の失敗は、返事がまだ1文字も来ていなければ、少し待ってやり直す
       if (!got && e.retryable && attempt < tries) {
-        const wait = [4, 10, 20][attempt] || 20;
+        // 待ち時間は少しずつ延ばし、ばらつきも入れる（みんなが同じ瞬間にやり直して、また混むのを避ける）
+        const wait = ([4, 10, 20, 40, 60][attempt] || 60) + Math.round(Math.random() * 3);
         m.thought = '';
         S.retryNote = `混んでいるようです。${wait}秒後にやり直します（${attempt + 1}/${tries}）`;
         paint();
@@ -972,6 +975,17 @@ async function generate(parentId, opts = {}) {
         S.retryNote = '';
         if (ok) continue;
         break;
+      }
+      // やり直しても混んでいるときは、決めておいた予備のモデルで返事をもらう
+      const backup = conn?.fallbackModel?.trim();
+      if (!got && e.status === 429 && backup && !fellBack && backup !== useConn.model) {
+        fellBack = true;
+        useConn = { ...conn, model: backup };
+        m.modelId = backup;
+        m.model = backup + (S.settings.connections.length > 1 ? `（${conn.name}）` : '');
+        m.notice = `${conn.model} が混んでいたため、予備の ${backup} で返事をもらいました`;
+        attempt = -1;   // 予備のモデルでも、やり直しの回数は最初から数える
+        continue;
       }
       if (e.vertexProject && conn && !conn.project) {
         conn.project = e.vertexProject;
@@ -1623,6 +1637,7 @@ c.type === 'vertex' && h('details', { class: 'sub', open: !!c.location },
       h('div', { class: 'hint', text: '新しいモデル（gemini-4-carbon など）は、global にしかないことがあります。「見つからない」エラーが出たら global にしてください。指定しない場合は、プロジェクトの既定の場所で動きます。' }),
       field('リージョン', select(c, 'location', [['', '指定しない（プロジェクトの既定）'], ['global', 'global（おすすめ）'], ['us', 'us（米国）'], ['eu', 'eu（欧州）'], ['asia-northeast1', 'asia-northeast1（東京）'], ['asia-southeast1', 'asia-southeast1（シンガポール）'], ['us-central1', 'us-central1（米国中部）']], saveSettings, again)),
       field('プロジェクト（番号またはID）', bound(c, 'project', saveSettings, { type: 'text', placeholder: '例: 123456789012', autocapitalize: 'off', autocorrect: 'off', inputMode: 'text' }), '空のままでも、最初に呼んだときに自動で入ります。入らないときは、Google Cloud の画面にあるプロジェクト番号を入れてください。')),
+!isDummy && field('混んでいるときの予備のモデル', select(c, 'fallbackModel', [['', '使わない'], ...c.models.map((name) => [name, name])], saveSettings), '自動のやり直しでも「混雑（429）」が続いたとき、このモデルで返事をもらいます。返事の下に、予備で返事したことが表示されます。'),
     isGemini && field('安全フィルター', select(c, 'safety', { default: '指定しない（標準）', BLOCK_ONLY_HIGH: '弱め', BLOCK_NONE: 'ブロックしない' }, saveSettings)),
     h('div', { class: 'btnrow' },
       !isActive && h('button', { class: 'primary', text: 'この接続を使う', onclick: () => { S.settings.activeConnId = c.id; saveSettings(); again(); } }),
@@ -2037,7 +2052,7 @@ function renderSettings() {
         check('showTimer', '返事を待っている間、秒数を表示する'),
         check('enterSend', 'Enterキーで送信する', 'オンにすると、iPhoneのキーボードでは「改行」キーで送信されます（改行できなくなります）。外付けキーボードやPC向けです。Shift+Enterで改行できます。'),
         check('skipDeleteConfirm', 'メッセージ削除のときに確認しない'),
-        field('混んでいるときの自動やり直し', select(ui, 'retries', [['0', 'しない'], ['1', '1回まで'], ['2', '2回まで'], ['3', '3回まで']], save), '「利用上限（429）」やサーバーのエラーで失敗したとき、少し待って自動でやり直します。返事が途中まで来ていたらやり直しません。')),
+        field('混んでいるときの自動やり直し', select(ui, 'retries', [['0', 'しない'], ['1', '1回まで'], ['2', '2回まで'], ['3', '3回まで'], ['4', '4回まで'], ['5', '5回まで']], save), '「利用上限（429）」やサーバーのエラーで失敗したとき、少し待って自動でやり直します。返事が途中まで来ていたらやり直しません。')),
       h('div', { class: 'card' },
         h('strong', { text: 'メッセージのボタン' }),
         field('ボタンの出し方', select(ui, 'toolsMode', { always: 'いつも表示する', tap: '吹き出しをタップしたときだけ表示する' }, save), '「タップしたときだけ」でも、最後のメッセージにはいつも表示されます。'),
@@ -2116,6 +2131,7 @@ async function loadAll() {
   S.hasBg = hasBg;
   for (const c of S.settings.connections) {
     c.location ??= '';
+    c.fallbackModel ??= '';
     c.project ??= '';
     if (!Array.isArray(c.models)) c.models = c.type === 'openai' ? [] : [...DEFAULT_MODELS];
     if (c.model && !c.models.includes(c.model)) c.models.unshift(c.model);
