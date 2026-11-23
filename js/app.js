@@ -112,7 +112,7 @@ function newConn() {
   return {
     id: uid(), name: 'Vertex AI', type: 'vertex', apiKey: '', baseUrl: '', model: DEFAULT_MODELS[0], models: [...DEFAULT_MODELS],
     temperature: '', maxTokens: '', thinkMode: 'none', thinkBudget: '', thinkLevel: 'high',
-    showThoughts: false, safety: 'default',
+    showThoughts: false, safety: 'default', location: '', project: '',
   };
 }
 
@@ -969,6 +969,7 @@ async function generate(parentId, opts = {}) {
         if (ok) continue;
         break;
       }
+      if (e.vertexProject && conn && !conn.project) { conn.project = e.vertexProject; saveSettings(); }
       S.error = e.message;
       break;
     }
@@ -1568,6 +1569,7 @@ function connCard(c) {
       }
       result.textContent = text ? `【成功】つながりました\n返事: ${text}` : '【注意】つながりましたが、返事が空でした。';
     } catch (e) {
+      if (e.vertexProject && !c.project) { c.project = e.vertexProject; saveSettings(); }
       result.textContent = `【失敗】${e.message}`;
     }
     btn.disabled = false;
@@ -1593,6 +1595,11 @@ function connCard(c) {
       field('ダミーUserプロンプト', bound(c, 'tailUser', saveSettings, { placeholder: '例: 上記の続きを、設定を守って書いてください。' }, 'textarea')),
       field('ダミーModelプロンプト（返事の書き出し）', bound(c, 'tailModel', saveSettings, { placeholder: '例: 承知しました。続きを書きます。' }, 'textarea'), 'モデルによっては対応しておらず、エラーになることがあります。'),
       h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!c.tailJoin, onchange: (e) => { c.tailJoin = e.target.checked; saveSettings(); } }), 'ダミーModelの文章を返事の先頭につなげて表示する')),
+c.type === 'vertex' && h('details', { class: 'sub', open: !!c.location },
+      h('summary', { text: `リージョン（場所）${c.location ? `：${c.location}` : ''}` }),
+      h('div', { class: 'hint', text: '新しいモデル（gemini-4-carbon など）は、global にしかないことがあります。「見つからない」エラーが出たら global にしてください。指定しない場合は、プロジェクトの既定の場所で動きます。' }),
+      field('リージョン', select(c, 'location', [['', '指定しない（プロジェクトの既定）'], ['global', 'global（おすすめ）'], ['us', 'us（米国）'], ['eu', 'eu（欧州）'], ['asia-northeast1', 'asia-northeast1（東京）'], ['asia-southeast1', 'asia-southeast1（シンガポール）'], ['us-central1', 'us-central1（米国中部）']], saveSettings, again)),
+      field('プロジェクト（番号またはID）', bound(c, 'project', saveSettings, { type: 'text', placeholder: '例: 123456789012', autocapitalize: 'off', autocorrect: 'off', inputMode: 'text' }), 'リージョンを指定するときに必要です。エラーが出たときに、エラー文から自動で入ることもあります。')),
     isGemini && field('安全フィルター', select(c, 'safety', { default: '指定しない（標準）', BLOCK_ONLY_HIGH: '弱め', BLOCK_NONE: 'ブロックしない' }, saveSettings)),
     h('div', { class: 'btnrow' },
       !isActive && h('button', { class: 'primary', text: 'この接続を使う', onclick: () => { S.settings.activeConnId = c.id; saveSettings(); again(); } }),
@@ -2085,6 +2092,8 @@ async function loadAll() {
   const hasBg = await applyBg();
   S.hasBg = hasBg;
   for (const c of S.settings.connections) {
+    c.location ??= '';
+    c.project ??= '';
     if (!Array.isArray(c.models)) c.models = c.type === 'openai' ? [] : [...DEFAULT_MODELS];
     if (c.model && !c.models.includes(c.model)) c.models.unshift(c.model);
   }

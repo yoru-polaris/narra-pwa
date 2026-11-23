@@ -51,9 +51,15 @@ async function fail(resp) {
     if (Array.isArray(j)) j = j[0];
     detail = j?.error?.message || detail;
   } catch { /* JSONでなければそのまま */ }
-  const hint = HINTS[resp.status] || (resp.status >= 500 ? 'サーバー側のエラーです。少し待ってやり直してください。' : '');
+  let hint = HINTS[resp.status] || (resp.status >= 500 ? 'サーバー側のエラーです。少し待ってやり直してください。' : '');
+  // 「このリージョンにそのモデルが無い」エラー：プロジェクト番号を拾い、global を案内する
+  const where = /projects\/([\w-]+)\/locations\/([\w-]+)\/publishers\/google\/models\/([\w.-]+)/.exec(detail);
+  if (resp.status === 404 && where) {
+    hint = `モデル「${where[3]}」は、今のリージョン（${where[2]}）では使えないようです。\n歯車 →「接続先」の「リージョン」を「global」にしてみてください。プロジェクト番号（${where[1]}）は自動で入れました。`;
+  }
   const err = new Error(`エラー ${resp.status}\n${hint}\n\n（サーバーからの返事）\n${detail}`.trim());
   err.status = resp.status;
+  if (where) err.vertexProject = where[1];
   err.retryable = resp.status === 429 || resp.status >= 500;
   throw err;
 }
@@ -86,11 +92,23 @@ const BLOCK_REASONS = {
   OTHER: '不明な理由で止められました',
 };
 
+// Vertex の呼び先。リージョンを指定しなければ、プロジェクトの既定の場所で動く短い形を使う。
+// 新しいモデルは global（や us / eu）にしかないことがあるので、プロジェクトとリージョンを指定できるようにする。
+function vertexUrl(conn, model) {
+  const loc = (conn.location || '').trim();
+  if (!loc) return `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:streamGenerateContent?alt=sse`;
+  const project = (conn.project || '').trim();
+  if (!project) {
+    const err = new Error('リージョンを指定するときは、プロジェクトの番号（またはID）も必要です。\n歯車 →「接続先」の「プロジェクト」に入れてください。番号は、エラー文の projects/○○○ の部分や、Google Cloud の画面で確認できます。');
+    throw err;
+  }
+  const host = loc === 'global' ? 'aiplatform.googleapis.com' : loc === 'us' ? 'aiplatform.us.rep.googleapis.com' : loc === 'eu' ? 'aiplatform.eu.rep.googleapis.com' : `${loc}-aiplatform.googleapis.com`;
+  return `https://${host}/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${model}:streamGenerateContent?alt=sse`;
+}
+
 async function* gemini(conn, { system, messages, signal, json }) {
   const model = encodeURIComponent(conn.model.trim());
-  const url = conn.type === 'vertex'
-    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:streamGenerateContent?alt=sse`
-    : `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
+  const url = conn.type === 'vertex' ? vertexUrl(conn, model) : `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
 
   const generationConfig = {};
   if (json) generationConfig.responseMimeType = 'application/json';
