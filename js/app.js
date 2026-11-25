@@ -552,7 +552,7 @@ function render() {
   if (S.error) {
     const leaf = S.msgs.get(S.chat.leafId);
     box.append(h('div', { class: 'errbox' }, S.error,
-      leaf?.role === 'user' && h('div', { class: 'btnrow' }, h('button', { text: 'もう一度試す', onclick: () => generate(leaf.id) }))));
+      (S.retryLast || leaf?.role === 'user') && h('div', { class: 'btnrow' }, h('button', { text: 'もう一度試す', onclick: () => (S.retryLast ? S.retryLast() : generate(leaf.id)) }))));
   }
   updateBar();
 }
@@ -974,9 +974,11 @@ async function generate(parentId, opts = {}) {
   m.modelId = conn?.type === 'dummy' ? '' : conn?.model || '';
   m.model = modelLabel(conn) + (S.settings.connections.length > 1 && conn?.type !== 'dummy' ? `（${conn.name}）` : '');
   const chat = S.chat;
+  const prevLeaf = chat.leafId;   // 失敗したら、ここに戻す（再生成の前に見ていた返事を見えなくしないため）
   S.msgs.set(m.id, m);
   chat.leafId = m.id;
   S.error = '';
+  S.retryLast = null;
   S.editing = null;
   S.busy = true;
   S.abort = new AbortController();
@@ -1062,8 +1064,9 @@ async function generate(parentId, opts = {}) {
     await db.put('messages', m);
   } else {
     S.msgs.delete(m.id);
-    if (chat.leafId === m.id) chat.leafId = parentId;
+    if (chat.leafId === m.id) chat.leafId = prevLeaf && S.msgs.has(prevLeaf) ? prevLeaf : parentId;
     if (!S.error && !S.abort.signal.aborted) S.error = m.notice || '返事が空でした。もう一度試してください。';
+    if (S.error) S.retryLast = () => generate(parentId, opts);
   }
   if (S.chat === chat) { await saveChat(); render(); } else { await db.put('chats', chat); }
   if (got && S.chat === chat && S.settings.summary.auto) {
