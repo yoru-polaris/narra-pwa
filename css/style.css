@@ -449,3 +449,8 @@ textarea.tapedit { cursor: pointer; }
 .thoughtbtns { display: flex; gap: 6px; margin: 6px 0 2px; }
 .thoughtbtns button { font-size: 12px; padding: 3px 10px; }
 .translated { white-space: pre-wrap; line-height: 1.8; font-size: 15px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.netlog { font-size: 12px; }
+.netrow { display: grid; grid-template-columns: auto auto 1fr; gap: 0 8px; padding: 6px 2px; border-bottom: 1px solid var(--line); }
+.netrow .when { color: var(--sub); } .netrow .st { font-weight: 700; } .netrow.ok .st { color: var(--accent); } .netrow.ng .st { color: var(--danger); }
+.netrow .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.netrow .where { grid-column: 1 / -1; color: var(--sub); }

@@ -64,16 +64,47 @@ async function fail(resp) {
   throw err;
 }
 
+// ---------- 通信の記録 ----------
+// AIに送ったリクエストを、直近 LOG_MAX 件だけこの端末に残す（中身の文章やキーは残さない）。
+const LOG_MAX = 80;
+const LOG_KEY = 'sousaku:netlog';
+let currentPurpose = '';
+export function readNetLog() {
+  try { return JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); } catch { return []; }
+}
+export function clearNetLog() { try { localStorage.removeItem(LOG_KEY); } catch { /* 何もしない */ } }
+function logNet(entry) {
+  try {
+    const list = readNetLog();
+    list.push(entry);
+    localStorage.setItem(LOG_KEY, JSON.stringify(list.slice(-LOG_MAX)));
+  } catch { /* 保存できなくても通信は続ける */ }
+}
+
 async function post(url, headers, body, signal) {
   let resp;
+  const text = JSON.stringify(body);
+  const u = new URL(url);
+  const entry = {
+    at: Date.now(), purpose: currentPurpose || '返事',
+    host: u.host.replace('generativelanguage.googleapis.com', 'AI Studio').replace(/aiplatform(\.\w+\.rep)?\.googleapis\.com|[\w-]+-aiplatform\.googleapis\.com/, (h) => `Vertex ${/locations\/([\w-]+)/.exec(u.pathname)?.[1] || '（既定）'}`),
+    model: body.model || /models\/([\w.-]+):/.exec(u.pathname)?.[1] || '',
+    kb: Math.round(text.length / 1024),
+  };
   try {
     resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify(body),
+      body: text,
       signal,
     });
+    entry.status = resp.status;
+    entry.ms = Date.now() - entry.at;
+    logNet(entry);
   } catch (e) {
+    entry.status = e.name === 'AbortError' ? '中止' : '通信失敗';
+    entry.ms = Date.now() - entry.at;
+    logNet(entry);
     if (e.name === 'AbortError') throw e;
     const err = new Error(`通信できませんでした。電波の状態やURLを確認してください。\n（${e.message}）`);
     err.retryable = true;
@@ -217,6 +248,7 @@ export function streamChat(conn, req) {
     } else merged.push({ role: m.role, text: m.text || '', images: [...(m.images || [])] });
   }
   req = { ...req, messages: merged };
+  currentPurpose = req.purpose || '';
   if (conn.type === 'dummy') return dummy(conn, req);
   if (!conn.apiKey?.trim()) throw new Error('APIキーが入力されていません。歯車のマークの設定 →「接続先」で入力してください。');
   if (!conn.model?.trim()) throw new Error('モデル名が入力されていません。歯車のマークの設定 →「接続先」で入力してください。');

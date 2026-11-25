@@ -1,5 +1,5 @@
 import { db, uid } from './db.js';
-import { streamChat, CONN_TYPES, DEFAULT_BASE_URL } from './api.js';
+import { streamChat, CONN_TYPES, DEFAULT_BASE_URL, readNetLog, clearNetLog } from './api.js';
 import { initPhone } from './phone.js';
 import { DEFAULT_INSERTS } from './inserts.js';
 
@@ -367,6 +367,25 @@ const usageText = (u, m) => {
   return `入力 ${num(u.in)}${u.cached ? `（うちキャッシュ ${num(u.cached)}・${Math.round((u.cached / Math.max(1, u.in)) * 100)}％）` : ''} ／ 出力 ${num(u.out)}${u.think ? ` ／ 思考 ${num(u.think)}` : ''} トークン${conv != null ? ` ／ 換算 ${num(Math.round(conv))}` : ''}`;
 };
 
+function openNetLog() {
+  $('#sheetTitle').textContent = '通信の記録';
+  const list = readNetLog().reverse();
+  const tm = (t) => new Date(t).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const day = (t) => new Date(t).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' });
+  const recent = list.filter((e) => Date.now() - e.at < 60000);
+  $('#sheetBody').replaceChildren(
+    h('p', { class: 'hint', text: `AIに送った直近${list.length}件です（新しい順）。送った文章やAPIキーは記録していません。直近1分間に送った回数：${recent.length}回` }),
+    h('div', { class: 'netlog' }, list.map((e) => h('div', { class: `netrow ${e.status === 200 ? 'ok' : 'ng'}` },
+      h('span', { class: 'when', text: `${day(e.at)} ${tm(e.at)}` }),
+      h('span', { class: 'st', text: String(e.status) }),
+      h('span', { class: 'what', text: `${e.purpose}・${e.model}` }),
+      h('span', { class: 'where', text: `${e.host}・${e.kb}KB・${(e.ms / 1000).toFixed(1)}秒` })))),
+    !list.length && h('p', { class: 'hint', text: 'まだ記録がありません。' }),
+    h('div', { class: 'btnrow' }, h('button', { text: '記録を消す', onclick: () => { clearNetLog(); openNetLog(); } })),
+  );
+  show('#sheet');
+}
+
 function openUsage() {
   $('#sheetTitle').textContent = '使用量';
   const sum = (list) => list.reduce((t, m) => {
@@ -665,7 +684,7 @@ async function translateThought(m) {
   out.textContent = '訳しています…';
   let text = '';
   try {
-    for await (const ev of streamChat(conn, { system: TRANSLATE_PROMPT, messages: [{ role: 'user', text: m.thought }] })) {
+    for await (const ev of streamChat(conn, { purpose: '翻訳', system: TRANSLATE_PROMPT, messages: [{ role: 'user', text: m.thought }] })) {
       if (ev.text) { text += ev.text; out.textContent = text; }
     }
     if (!text.trim()) throw new Error('訳が空でした。');
@@ -702,7 +721,7 @@ async function summarize(manual) {
   if (!manual) toast('古い部分を要約しています…');
   try {
     let out = '';
-    for await (const ev of streamChat(summaryConn(), { system: SUMMARY_PROMPT, messages: [{ role: 'user', text: input }] })) {
+    for await (const ev of streamChat(summaryConn(), { purpose: manual ? '要約' : '自動要約', system: SUMMARY_PROMPT, messages: [{ role: 'user', text: input }] })) {
       if (ev.text) out += ev.text;
       if (ev.notice && !out) throw new Error(ev.notice);
     }
@@ -780,6 +799,7 @@ function openChatMenu() {
     h('p', { class: 'grouphead', text: '見る・のぞく' }),
     item('phone', 'スマホをのぞく', phone.openPeekSheet),
     item('gauge', '使用量（トークン・キャッシュ）', openUsage),
+    item('gauge', '通信の記録（エラーの確認用）', openNetLog),
     item('branch', '分岐ツリー', openTree),
     h('p', { class: 'grouphead', text: '整理' }),
     item('summary', `あらすじ（要約）${S.chat.summary ? (S.chat.summaryOn === false ? '（オフ）' : '（あり）') : ''}`, openSummary),
@@ -989,7 +1009,7 @@ async function generate(parentId, opts = {}) {
   let fellBack = false;
   for (let attempt = 0; ; attempt++) {
     try {
-      for await (const ev of streamChat(useConn, { system, messages: history, signal: S.abort.signal })) {
+      for await (const ev of streamChat(useConn, { purpose: attempt > 0 ? `やり直し${attempt}` : fellBack ? '予備モデル' : opts.side ? '番外' : '返事', system, messages: history, signal: S.abort.signal })) {
         if (ev.text) { m.text += ev.text; got = true; }
         if (ev.thought) m.thought += ev.thought;
         if (ev.notice) m.notice = ev.notice;
@@ -1629,7 +1649,7 @@ function connCard(c) {
     let learned = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        for await (const ev of streamChat(c, { system: '', messages: [{ role: 'user', text: 'こんにちは。ひとことで返事をしてください。' }] })) {
+        for await (const ev of streamChat(c, { purpose: '接続テスト', system: '', messages: [{ role: 'user', text: 'こんにちは。ひとことで返事をしてください。' }] })) {
           if (ev.text) text += ev.text;
         }
         msg = text ? `【成功】つながりました\n返事: ${text}` : '【注意】つながりましたが、返事が空でした。';
@@ -1747,7 +1767,7 @@ async function tidyCard(c, btn) {
   btn.textContent = '整理中…（1分ほどかかることがあります）';
   try {
     let out = '';
-    for await (const ev of streamChat({ ...activeConn(), tailUser: '', tailModel: '' }, { system: TIDY_PROMPT, messages: [{ role: 'user', text: source }] })) {
+    for await (const ev of streamChat({ ...activeConn(), tailUser: '', tailModel: '' }, { purpose: 'AI整理', system: TIDY_PROMPT, messages: [{ role: 'user', text: source }] })) {
       if (ev.text) out += ev.text;
       if (ev.notice && !out) throw new Error(ev.notice);
     }
