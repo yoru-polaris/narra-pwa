@@ -484,6 +484,7 @@ function messageEl(m, index) {
         h('button', { text: '◀', disabled: idx === 0, 'aria-label': '前の枝', onclick: () => switchBranch(sibs[idx - 1]) }),
         h('span', { class: 'sib', text: `${idx + 1} / ${sibs.length}` }),
         h('button', { text: '▶', disabled: idx === sibs.length - 1, 'aria-label': '次の枝', onclick: () => switchBranch(sibs[idx + 1]) }),
+        h('button', { class: `brname ${m.label ? 'has' : ''}`, 'aria-label': '枝に名前を付ける', onclick: () => nameBranch(m) }, icon('pencil'), m.label || '名前'),
       );
     }
     tools.append(h('button', { class: 'sym c-fold', text: m.collapsed ? '▸' : '▾', 'aria-label': m.collapsed ? 'ひらく' : 'たたむ', onclick: fold }));
@@ -613,6 +614,17 @@ async function setBg(file) {
 }
 
 // 枝分かれの全体図。一本道の区間を1行にまとめ、分岐するたびに一段下げて表示する。
+// 枝の名前（自分で付ける一行メモ）。枝の最初のメッセージに付け、ツリーと ◀ ▶ の横に出す。
+async function nameBranch(m, after) {
+  const name = prompt('この枝の名前（一行メモ）\n例: 怒るルート、素直に謝る\n空にすると消えます。', m.label || '');
+  if (name == null) return;
+  const v = name.trim().slice(0, 40);
+  if (v) m.label = v; else delete m.label;
+  await db.put('messages', m);
+  render();
+  after?.();
+}
+
 function openTree() {
   $('#sheetTitle').textContent = '分岐ツリー';
   const onPath = new Set(pathTo(S.chat.leafId).map((m) => m.id));
@@ -647,8 +659,10 @@ function openTree() {
     h('p', { class: 'hint', text: rows.length ? `全部で ${S.msgs.size} 件、枝の先は ${leaves} 本あります。行をタップするとその枝に切り替わります。` : 'まだメッセージがありません。' }),
     ...rows.map((r) => h('div', { class: `treerow ${onPath.has(r.start.id) ? 'on' : ''}`, style: `margin-left:${Math.min(r.depth, 8) * 14}px` },
       h('button', { class: 'plain', onclick: () => jump(r) },
-        h('div', { class: 't' }, icon(r.start.role === 'user' ? 'user' : 'ai'), expandImages(r.start.text).replace(IMG_URL, '〔画像〕').replace(/\s+/g, ' ').slice(0, 60) || '（添付のみ）'),
+        h('div', { class: `t ${r.start.label ? 'named' : ''}` }, icon(r.start.role === 'user' ? 'user' : 'ai'), r.start.label || expandImages(r.start.text).replace(IMG_URL, '〔画像〕').replace(/\s+/g, ' ').slice(0, 60) || '（添付のみ）'),
+        r.start.label && h('div', { class: 'd', text: expandImages(r.start.text).replace(IMG_URL, '〔画像〕').replace(/\s+/g, ' ').slice(0, 50) }),
         h('div', { class: 'd', text: `${r.count} 件${r.kids.length ? `　→ ここから ${r.kids.length} つに分岐` : '　・枝の先'}${onPath.has(r.last.id) && !r.kids.length ? '　✔ 今ここ' : ''}　${stamp(r.last.createdAt)}` })),
+      h('button', { class: 'iconbtn', 'aria-label': 'この枝に名前を付ける', onclick: () => nameBranch(r.start, openTree) }, icon('pencil')),
       h('button', { class: 'iconbtn', 'aria-label': 'この枝を削除', onclick: async () => { await removeMessage(r.start); if (!$('#sheet').hidden) openTree(); } }, icon('trash')))),
   );
   show('#sheet');
@@ -833,11 +847,13 @@ function openFind(query = '') {
   const run = () => {
     const q = input.value.trim();
     if (!q) { list.replaceChildren(h('p', { class: 'hint', text: '言葉を入れると、このチャットの全部の枝から探します。' })); return; }
-    const hits = [...S.msgs.values()].filter((m) => m.text.includes(q))
+    const hits = [...S.msgs.values()].filter((m) => m.text.includes(q) || (m.label || '').includes(q))
       .sort((a, b) => (onPath.has(b.id) - onPath.has(a.id)) || a.createdAt - b.createdAt);
     list.replaceChildren(
       h('p', { class: 'hint', text: hits.length ? `${hits.length} 件見つかりました${hits.length > 100 ? '（最初の100件を表示）' : ''}` : '見つかりませんでした。' }),
       ...hits.slice(0, 100).map((m) => {
+        if (!m.text.includes(q)) return h('div', { class: 'row findrow' }, h('button', { class: 'plain', onclick: () => jumpTo(m, q) },
+          h('div', { class: 'd', text: `枝の名前・${stamp(m.createdAt)}${onPath.has(m.id) ? '' : '・別の枝'}` }), h('div', { class: 'snip' }, h('mark', { text: m.label }))));
         const i = m.text.indexOf(q);
         const before = m.text.slice(Math.max(0, i - 24), i).replace(/\s+/g, ' ');
         const after = m.text.slice(i + q.length, i + q.length + 40).replace(/\s+/g, ' ');
